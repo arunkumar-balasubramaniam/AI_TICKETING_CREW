@@ -1,6 +1,9 @@
 import os
 import warnings
+
 from dotenv import load_dotenv
+load_dotenv()
+
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from langchain_community.utilities import SerpAPIWrapper
@@ -9,7 +12,7 @@ from rag_engine import search_knowledge_base
 from google_service import send_email_response
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-load_dotenv()
+# load_dotenv()
 
 crew_llm = LLM(
     model="gpt-4o-mini",
@@ -23,10 +26,15 @@ def serp_web_search(query: str) -> str:
     """Performs a live Google search via SerpAPI if knowledge base retrieval is insufficient."""
     try:
         search = SerpAPIWrapper()
-        return search.run(query)
+        raw_result = search.run(query)
+        
+        # Flatten lists or dicts explicitly into clean text
+        if isinstance(raw_result, list):
+            return "\n".join(str(item) for item in raw_result).strip()
+        
+        return str(raw_result).strip()
     except Exception as e:
         return f"Web search failed: {str(e)}"
-
 
 # Tool 2: Dispatch Threaded Email Response to Customer
 @tool("Send Threaded Email Response")
@@ -54,7 +62,7 @@ agent_1_resolver = Agent(
     tools=[search_knowledge_base],
     llm=crew_llm,
     max_iter=2,
-    verbose=True
+    verbose=False
 )
 
 agent_2_validator = Agent(
@@ -63,7 +71,7 @@ agent_2_validator = Agent(
     backstory="You are a strict QA auditor ensuring airline responses meet the minimum 70% confidence threshold and preventing unnecessary web searches when internal knowledge is sufficient.",
     tools=[serp_web_search],
     llm=crew_llm,
-    verbose=True
+    verbose=False
 )
 
 agent_3_dispatcher = Agent(
@@ -72,7 +80,7 @@ agent_3_dispatcher = Agent(
     backstory="You ensure threaded email delivery via Gmail directly to the customer's email address.",
     tools=[dispatch_email],
     llm=crew_llm,
-    verbose=True
+    verbose=False
 )
 
 
@@ -103,14 +111,20 @@ def process_ticket(ticket_id: str, sender_email: str, subject: str, customer_que
             f"Input Data:\n{customer_query}\n\n"
             "Evaluation Instructions:\n"
             "1. Inspect Agent 1's draft response.\n"
-            "2. If Agent 1 successfully answered the query using the policy manual or conversation history, assign a Confidence Score >= 80% and mark Source as 'Knowledge Base'. Do NOT use web search.\n"
-            "3. If Agent 1 could NOT answer the query (e.g., states 'I couldn't find information' or scores < 70%), you MUST call the 'Web Search Tool' using the customer's question as the search query. Synthesize the live web search findings into a complete, factual answer and mark Source as 'Web Search'.\n"
-            "Output format:\n"
-            "Score: <number>%\n"
+            "2. If Agent 1 successfully answered the query using the airline policy manual or conversation history:\n"
+            "   - Assign Agent 1 a Retrieval Confidence Score >= 75% (e.g., 85% or 95%).\n"
+            "   - Mark Source as 'Knowledge Base'.\n"
+            "   - Do NOT use the web search tool.\n"
+            "3. If Agent 1 could NOT find the information in the airline manual (e.g., states 'I couldn't find information' or scores < 70%):\n"
+            "   - Record Agent 1's Retrieval Confidence Score as < 70% (e.g., 20% or 30%).\n"
+            "   - You MUST invoke the 'Web Search Tool' using the customer's query.\n"
+            "   - Synthesize the web search findings into a complete factual answer and mark Source as 'Web Search'.\n\n"
+            "Output Format strictly as:\n"
+            "Score: <Agent 1's retrieval score, e.g. 20% if web search needed, 90% if found in KB>\n"
             "Source: <Knowledge Base or Web Search>\n"
             "Final Answer: <the factual answer to send to the customer>"
         ),
-        expected_output="Validated factual response with confidence score and source indicator.",
+        expected_output="Audit report containing Agent 1's retrieval score (<70% for fallback, >=70% for KB), source, and final answer.",
         agent=agent_2_validator
     )
 
@@ -129,20 +143,42 @@ def process_ticket(ticket_id: str, sender_email: str, subject: str, customer_que
         agent=agent_3_dispatcher
     )
 
+    # crew = Crew(
+    #     agents=[agent_1_resolver, agent_2_validator, agent_3_dispatcher],
+    #     tasks=[task_1, task_2, task_3],
+    #     process=Process.sequential,
+    #     verbose=True
+    # )
+
+    # inputs = {
+    #     "ticket_id": ticket_id,
+    #     "sender_email": sender_email,
+    #     "subject": subject,
+    #     "customer_query": customer_query,
+    #     "thread_id": thread_id,
+    #     "message_id_header": message_id_header
+    # }
+
+    # return crew.kickoff(inputs=inputs)
+
+
+    # Execute the sequential crew
     crew = Crew(
         agents=[agent_1_resolver, agent_2_validator, agent_3_dispatcher],
         tasks=[task_1, task_2, task_3],
         process=Process.sequential,
-        verbose=True
+        verbose=True,
+        tracing=False  # Explicitly disables the tracing status box.
     )
-
-    inputs = {
-        "ticket_id": ticket_id,
-        "sender_email": sender_email,
-        "subject": subject,
-        "customer_query": customer_query,
-        "thread_id": thread_id,
-        "message_id_header": message_id_header
+    
+    result = crew.kickoff()
+    
+    # Task 2 (index 1) contains the Agent 2 validation audit (Score & Source)
+    # Task 3 (index 2) contains the final dispatched email
+    agent_2_audit = str(crew.tasks[1].output) if len(crew.tasks) > 1 else str(result)
+    final_email = str(crew.tasks[2].output) if len(crew.tasks) > 2 else str(result)
+    
+    return {
+        "final_output": final_email,
+        "audit_output": agent_2_audit
     }
-
-    return crew.kickoff(inputs=inputs)

@@ -1,3 +1,48 @@
+import os
+import sys
+from dotenv import load_dotenv
+
+# Must be set before importing CrewAI or crew_pipeline
+load_dotenv()
+os.environ["CREWAI_DISABLE_TRACING_NOTIFICATION"] = "true"
+os.environ["CREWAI_TRACING_ENABLED"] = "false"
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
+
+import logging
+logging.getLogger("crewai").setLevel(logging.ERROR)
+
+# --- Prevent I/O Crashes & Suppress CrewAI Tracing Banner ---
+class SafeStream:
+    def __init__(self, target_stream):
+        self.target_stream = target_stream
+
+    def write(self, data):
+        # Filter out CrewAI's hardcoded Tracing Status notification box
+        if isinstance(data, str) and ("Tracing Status" in data or "Info: Tracing is disabled" in data):
+            return
+
+        try:
+            if not self.target_stream.closed:
+                self.target_stream.write(data)
+                self.target_stream.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            if not self.target_stream.closed:
+                self.target_stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self.target_stream, "isatty", lambda: False)()
+
+sys.stdout = SafeStream(sys.__stdout__ or sys.stdout)
+sys.stderr = SafeStream(sys.__stderr__ or sys.stderr)
+# -------------------------------------------------------------
+
 import time
 import base64
 import re
@@ -233,33 +278,60 @@ def check_and_process_emails():
 
         elapsed_time = time.perf_counter() - start_time
 
-        # Log resolved ticket details to Google Sheets
+        # Extract audit details and final text
+        if isinstance(crew_output, dict):
+            audit_text = crew_output.get("audit_output", "")
+            final_response_str = crew_output.get("final_output", "")
+        else:
+            audit_text = str(crew_output)
+            final_response_str = str(crew_output)
+
+        # Dynamic Score Extraction
+        detected_score = ">=70%"
+        score_match = re.search(r"Score:\s*(\d+%?)", audit_text, re.IGNORECASE)
+        if score_match:
+            detected_score = score_match.group(1)
+            if not detected_score.endswith("%"):
+                detected_score += "%"
+
+        # Dynamic Source Extraction
+        if "web search" in audit_text.lower() or "source: web search" in audit_text.lower():
+            detected_source = "Web Search"
+        else:
+            detected_source = "Knowledge Base"
+
+        print(f"📊 Agent 1 Retrieval Score : {detected_score}")
+        print(f"🔍 Final Answer Source     : {detected_source}")
+        print(f"⏱️ Total Response Time     : {elapsed_time:.2f} seconds")
+
+        # Log dynamically parsed results to Google Sheets
         log_ticket_to_sheet(
             ticket_id=ticket_id,
             sender_email=sender_email,
             subject=subject,
             query=body,
-            score=">=70%",
-            source="Knowledge Base / Thread History",
-            response=str(crew_output),
+            score=detected_score,
+            source=detected_source,
+            response=final_response_str,
             response_time=elapsed_time
         )
 
-        print(f"⏱️ Total Response Time: {elapsed_time:.2f} seconds")
         print(f"✅ Successfully resolved and replied to Ticket [{ticket_id}].\n")
 
 
 def start_polling(interval_seconds=5):
-    """Starts the continuous polling loop for incoming support emails."""
     print("🚀 SkyRoute Autonomous Ticketing System is LIVE!")
     print(f"Listening for customer queries every {interval_seconds} seconds...\n")
     while True:
         try:
             check_and_process_emails()
+            time.sleep(interval_seconds)
+        except KeyboardInterrupt:
+            print("\n🛑 Polling stopped by user. Exiting cleanly.")
+            break
         except Exception as e:
-            print(f"⚠️ Polling error: {str(e)}")
-        time.sleep(interval_seconds)
-
+            print(f"⚠️ Polling loop error: {str(e)}")
+            time.sleep(interval_seconds)
 
 if __name__ == "__main__":
     start_polling(5)

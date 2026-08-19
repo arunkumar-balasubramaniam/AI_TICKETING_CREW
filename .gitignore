@@ -6,3 +6,11 @@ __pycache__/
 credentials.json
 token.json
 faiss_index/
+
+# PDF Generator Scripts
+generate_pdf_guide.py
+generate_pdf_setup_guide.py
+
+# Generated PDF Guides
+SkyRoute_Build_Steps_and_Architecture*.pdf
+SkyRoute_System_Setup_Guide.pdf

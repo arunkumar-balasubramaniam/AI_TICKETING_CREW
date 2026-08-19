@@ -97,3 +97,9 @@ Start the Autonomous Email Listener
 python main_listener.py
 
 The service polls for unread customer inquiries every 5 seconds, processes requests through the multi-agent pipeline, delivers threaded replies, and writes audit rows into Google Sheets.
+
+
+## 📊 Live Audit Logs & Ticket Monitoring
+All customer support queries, retrieval confidence scores, dynamically resolved sources (Knowledge Base vs. Web Search), and response times are logged in real-time to Google Sheets.
+
+🔗 **[View Live SkyRoute Support Audit Logs (Google Sheet)] (https://docs.google.com/spreadsheets/d/1PuksTZgb72Pekqv1UUwl8-QEc-rGPpCm6VMP3r17X9M/edit?usp=sharing)**
